@@ -1,57 +1,341 @@
-# Sample Hardhat 3 Beta Project (`node:test` and `viem`)
+# Vessel Pay Smart Contracts
 
-This project showcases a Hardhat 3 Beta project using the native Node.js test runner (`node:test`) and the `viem` library for Ethereum interactions.
+Smart Contract for Vessel Pay dApp using ERC-4337 Account Abstraction payment infrastructure enabling gasless stablecoin transactions on Base Sepolia and Etherlink Shadownet.
 
-To learn more about the Hardhat 3 Beta, please visit the [Getting Started guide](https://hardhat.org/docs/getting-started#getting-started-with-hardhat-3). To share your feedback, join our [Hardhat 3 Beta](https://hardhat.org/hardhat3-beta-telegram-group) Telegram group or [open an issue](https://github.com/NomicFoundation/hardhat/issues/new) in our GitHub issue tracker.
+## Overview
 
-## Project Overview
+Vessel Pay is a decentralized payment platform that leverages ERC-4337 Account Abstraction to provide:
 
-This example project includes:
+- **One-time approval**: Users approve once, then all future transactions are gasless
+- **Gasless Transactions**: Users pay fees in stablecoins instead of native ETH and XTZ
+- **Multi-Stablecoin Support**: Support for 10 stablecoins (USDC, USDT, USDS, EURC, BRZ, AUDD, CADC, ZCHF, tGBP, IDRX)
+- **QR Payment Requests**: Merchants create gasless payment requests via off-chain signatures
+- **QRIS Supported**: Pay to QRIS (Quick Response Code Indonesian Standard)
+- **Auto-Swap**: Automatic cross-token swaps during payments
+- **Deterministic Smart Accounts**: Predictable account addresses using CREATE2
 
-- A simple Hardhat configuration file.
-- Foundry-compatible Solidity unit tests.
-- TypeScript integration tests using [`node:test`](nodejs.org/api/test.html), the new Node.js native test runner, and [`viem`](https://viem.sh/).
-- Examples demonstrating how to connect to different types of networks, including locally simulating OP mainnet.
+## Architecture
 
-## Usage
+### Core Contracts
 
-### Running Tests
+#### 1. **Paymaster.sol** - ERC-4337 Paymaster
 
-To run all the tests in the project, execute the following command:
+The central contract for sponsoring gas fees and collecting payment in stablecoins.
 
-```shell
-npx hardhat test
+**Key Features:**
+
+- ERC-4337 v0.7 compatible
+- Works with Pimlico Bundler
+- Supports ERC-2612 Permit for gasless approvals
+- 5% gas fee markup (configurable)
+- Multi-token support via StablecoinRegistry
+
+**Main Functions:**
+
+- `validatePaymasterUserOp()` - Validates UserOperations and sponsors gas
+- `postOp()` - Collects fees in stablecoins after execution
+- `calculateFee()` - Calculates stablecoin cost for ETH and XTZ gas
+
+#### 2. **StablecoinRegistry.sol** - Rate and Conversion Registry
+
+Manages stablecoin metadata and handles conversions between different tokens.
+
+**Key Features:**
+
+- Supports 10 stablecoins with hardcoded exchange rates
+- 8 decimal precision for all rates
+- Uses USD as intermediate for conversions
+- ETH and XTZ <-> Stablecoin conversion for gas calculations
+- Rate change limits (50% max per update)
+
+**Main Functions:**
+
+- `convert()` - Convert between any two registered stablecoins
+- `ethToToken()` - Convert ETH and XTZ amount to stablecoin for gas fees
+- `updateRate()` - Update exchange rates (owner only)
+
+#### 3. **QRISRegistry.sol** - QRIS Registry
+
+Binds QRIS hashes to Vessel Pay Smart Accounts with whitelist-based onboarding.
+
+**Key Features:**
+
+- One SA can register only one QRIS hash
+- Stores merchant metadata (name, id, city)
+
+**Main Functions:**
+
+- `registerQris()` - Register QRIS hash to caller SA
+- `removeQris()` - Remove QRIS binding
+- `getQris()` / `getQrisBySa()` - Lookup registry data
+
+#### 4. **PaymentProcessor.sol** - Payment Request Handler
+
+Processes QR-based payment requests with off-chain merchant signatures.
+
+**Key Features:**
+
+- Gasless for merchants (sign request off-chain)
+- Platform fee: 0.3% (30 BPS)
+- Auto-swap if payer uses different token
+- Replay protection with nonces
+- Deadline validation
+
+**Main Functions:**
+
+- `executePayment()` - Execute payment with merchant signature
+- `calculatePaymentCost()` - Calculate total cost including fees
+
+#### 5. **StableSwap.sol** - Liquidity Pool
+
+Owner-managed liquidity pool for stablecoin swaps.
+
+**Key Features:**
+
+- Swap fee: 0.1% (10 BPS)
+- Owner-controlled liquidity (private pool)
+- Slippage protection
+- Uses StablecoinRegistry for conversion rates
+
+**Main Functions:**
+
+- `swap()` - Execute token swap
+- `getSwapQuote()` - Get swap quote without execution
+- `deposit()` / `withdraw()` - Manage liquidity (owner only)
+
+#### 6. **SimpleAccount.sol** - ERC-4337 Smart Account
+
+Minimal smart account implementation with owner-signature validation.
+
+**Key Features:**
+
+- ERC-4337 v0.7 compatible
+- Owner-controlled execution
+- Single-owner signature validation
+- Batch execution support
+
+#### 7. **SimpleAccountFactory.sol** - Smart Account Factory
+
+Factory for deploying deterministic smart accounts using CREATE2.
+
+**Key Features:**
+
+- Deterministic address generation
+- CREATE2 deployment
+- Same owner + salt = same address
+
+## Fee Structure
+
+| Fee Type       | Rate          | Paid By | Token      |
+| -------------- | ------------- | ------- | ---------- |
+| Platform Fee   | 0.3% (30 BPS) | Payer   | Stablecoin |
+| Swap Fee       | 0.1% (10 BPS) | Payer   | Stablecoin |
+
+## Setup and Installation
+
+### Installation
+
+```bash
+# Clone repository
+git clone <repository-url>
+cd vessel-sc
+
+# Install dependencies
+forge install
 ```
 
-You can also selectively run the Solidity or `node:test` tests:
+### Environment Setup
 
-```shell
-npx hardhat test solidity
-npx hardhat test nodejs
+Create a `.env` file in the root directory:
+
+```bash
+# Deployment and Verification
+PRIVATE_KEY=0x...
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+ETHERLINK_SHADOWNET_RPC_URL=https://node.shadownet.etherlink.com
+BASESCAN_API_KEY=your_api_key
+
+# EntryPoint (ERC-4337 v0.7)
+# Update this address to match the target network you deploy to.
+ENTRYPOINT_ADDRESS=0x0000000071727De22E5E9d8BAf0edAc6f37da032
+
+# Initial Configuration
+INITIAL_ETH_USD_RATE=300000000000  # $3000 with 8 decimals
+
+# Stablecoin Rates (8 decimal precision)
+USDC_RATE=100000000        # 1 USD
+USDS_RATE=100000000        # 1 USD
+USDT_RATE=100000000        # 1 USD
+EURC_RATE=95000000         # 0.95 EUR per USD
+BRZ_RATE=500000000         # 5 BRL per USD
+AUDD_RATE=160000000        # 1.6 AUD per USD
+CADC_RATE=135000000        # 1.35 CAD per USD
+ZCHF_RATE=90000000         # 0.9 CHF per USD
+TGBP_RATE=80000000         # 0.8 GBP per USD
+IDRX_RATE=1600000000000    # 16,000 IDR per USD
+
+# Optional: EntryPoint deposit for gas sponsorship
+ENTRYPOINT_DEPOSIT_WEI=10000000000000000000  # 10 ETH
 ```
 
-### Make a deployment to Sepolia
+## Testing
 
-This project includes an example Ignition module to deploy the contract. You can deploy this module to a locally simulated chain or to Sepolia.
+Run the test suite:
 
-To run the deployment to a local chain:
+```bash
+# Run all tests
+forge test
 
-```shell
-npx hardhat ignition deploy ignition/modules/Counter.ts
+# Run specific test file
+forge test --match-path test/Paymaster.t.sol
 ```
 
-To run the deployment to Sepolia, you need an account with funds to send the transaction. The provided Hardhat configuration includes a Configuration Variable called `SEPOLIA_PRIVATE_KEY`, which you can use to set the private key of the account you want to use.
+## Deployment
 
-You can set the `SEPOLIA_PRIVATE_KEY` variable using the `hardhat-keystore` plugin or by setting it as an environment variable.
+### Deploy All Contracts
 
-To set the `SEPOLIA_PRIVATE_KEY` config variable using `hardhat-keystore`:
+```bash
+# Deploy to Base Sepolia
+forge script script/DeployAll.s.sol \
+  --rpc-url $BASE_SEPOLIA_RPC_URL \
+  --broadcast \
+  --verify
 
-```shell
-npx hardhat keystore set SEPOLIA_PRIVATE_KEY
+# Or use the shorthand
+forge script script/DeployAll.s.sol --rpc-url base_sepolia --broadcast --verify
+
+# Deploy to Etherlink Shadownet (EVM Osaka)
+# Use DeployEtherlink.s.sol if you only want USDC, USDT, and IDRX.
+forge script script/DeployAll.s.sol \
+  --rpc-url $ETHERLINK_SHADOWNET_RPC_URL \
+  --broadcast \
+  --profile etherlink
+
+# Or use the shorthand
+forge script script/DeployAll.s.sol --rpc-url etherlink_shadownet --broadcast --profile etherlink
+
+# Deploy to Etherlink Shadownet (USDC, USDT, IDRX only)
+forge script script/DeployEtherlink.s.sol \
+  --rpc-url $ETHERLINK_SHADOWNET_RPC_URL \
+  --broadcast \
+  --profile etherlink
 ```
 
-After setting the variable, you can run the deployment with the Sepolia network:
+## Network Information
 
-```shell
-npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
+### Base Sepolia Testnet
+
+- **Chain ID**: 84532
+- **RPC URL**: https://sepolia.base.org
+- **Block Explorer**: https://base-sepolia.blockscout.com
+
+### Etherlink Shadownet Testnet
+
+- **Chain ID**: 127823
+- **RPC URL**: https://node.shadownet.etherlink.com
+- **Block Explorer**: https://shadownet.explorer.etherlink.com
+- **Faucet**: https://shadownet.faucet.etherlink.com/
+
+## Supported Stablecoins
+
+### Base Sepolia
+
+| Symbol | Name               | Decimals | Region |
+| ------ | ------------------ | -------- | ------ |
+| USDC   | USD Coin           | 6        | US     |
+| USDS   | Sky Dollar         | 6        | US     |
+| EURC   | EURC               | 6        | EU     |
+| BRZ    | Brazilian Digital  | 6        | BR     |
+| AUDD   | AUDD               | 6        | AU     |
+| CADC   | CAD Coin           | 6        | CA     |
+| ZCHF   | Frankencoin        | 6        | CH     |
+| tGBP   | Tokenised GBP      | 18       | GB     |
+| IDRX   | IDRX               | 6        | ID     |
+
+### Etherlink Shadownet
+
+| Symbol | Name          | Decimals | Region |
+| ------ | ------------- | -------- | ------ |
+| USDC   | USD Coin      | 6        | US     |
+| USDT   | Tether USD    | 6        | US     |
+| IDRX   | IDRX          | 6        | ID     |
+
+## Contract Addresses
+
+### Base Sepolia (Testnet)
+
 ```
+EntryPoint:            0x0000000071727De22E5E9d8BAf0edAc6f37da032
+StablecoinRegistry:    0x573f4D2b5e9E5157693a9Cc0008FcE4e7167c584
+Paymaster:             0x1b14BF9ab47069a77c70Fb0ac02Bcb08A9Ffe290
+StableSwap:            0x822e1dfb7bf410249b2bE39809A5Ae0cbfae612f
+PaymentProcessor:      0x4D053b241a91c4d8Cd86D0815802F69D34a0164B
+SimpleAccountFactory:  0xfEA9DD0034044C330c0388756Fd643A5015d94D2
+QRISRegistry:          0x243826f0f2487c0D0B07Cb313080BE76818F4aa2
+
+Mock Tokens:
+  USDC:  0x74FB067E49CBd0f97Dc296919e388CB3CFB62b4D
+  USDS:  0x79f3293099e96b840A0423B58667Bc276Ea19aC0
+  EURC:  0xfF4dD486832201F6DC41126b541E3b47DC353438
+  BRZ:   0x9d30F685C04f024f84D9A102d0fE8dF348aE7E7d
+  AUDD:  0x9f6b8aF49747304Ce971e2b9d131B2bcd1841d83
+  CADC:  0x6BB3FFD9279fBE76FE0685Df7239c23488bC96e4
+  ZCHF:  0xF27edF22FD76A044eA5B77E1958863cf9A356132
+  tGBP:  0xb4db79424725256a6E6c268fc725979b24171857
+  IDRX:  0x34976B6c7Aebe7808c7Cab34116461EB381Bc2F8
+```
+
+### Etherlink Shadownet (Testnet)
+
+```
+EntryPoint:            0x0000000071727De22E5E9d8BAf0edAc6f37da032
+StablecoinRegistry:    0x6fe372ef0B695ec05575D541e0DA60bf18A3D0f0
+Paymaster:             0xFC7E8c60315e779b1109B252fcdBFB8f3524F9B6
+StableSwap:            0xB67b210dEe4C1A744c1d51f153b3B3caF5428F60
+PaymentProcessor:      0x5D4748951fB0AF37c57BcCb024B3EE29360148bc
+SimpleAccountFactory:  0xb7E56FbAeC1837c5693AAf35533cc94e35497d86
+QRISRegistry:          0xD17d8f2819C068A57f0F4674cF439d1eC96C56f5
+
+Mock Tokens:
+  USDC:  0x60E48d049EB0c75BF428B028Da947c66b68f5dd2
+  USDT:  0xcaF86109F34d74DE0e554FD5E652C412517374fb
+  IDRX:  0x8A272505426D4F129EE3493A837367B884653237
+```
+
+## Security Considerations
+
+- **Rate Updates**: StablecoinRegistry has a 50% max rate change limit per update to prevent abuse.
+- **Paymaster Deposits**: Monitor EntryPoint deposits to ensure sufficient gas sponsorship funds.
+- **Nonce Replay**: PaymentProcessor uses nonces to prevent replay attacks.
+- **Signature Validation**: All off-chain signatures are validated on-chain before execution.
+
+## Development
+
+### Code Style
+
+This project uses:
+
+- Solidity 0.8.31 (Cancun by default, Osaka for Etherlink profile)
+- Foundry for testing and deployment
+- OpenZeppelin contracts for standards
+
+### Project Structure
+
+```
+vessel-sc/
+- src/               # Smart contracts
+  - account/         # ERC-4337 Smart Account contracts
+  - interfaces/      # Contract interfaces
+  - paymaster/       # Paymaster contract
+  - payment/         # Payment processing contracts
+  - registry/        # Stablecoin registry
+  - swap/            # Swap pool contracts
+  - token/           # Mock token contracts
+- test/              # Test files
+- script/            # Deployment scripts
+- foundry.toml       # Foundry configuration
+```
+
+## License
+
+MIT License - see LICENSE file for details
